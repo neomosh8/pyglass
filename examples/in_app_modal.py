@@ -61,8 +61,14 @@ class MyApp(QWidget):
     def open_panel(self) -> None:
         if self._panel is not None and self._panel.isVisible():
             return
-        # One line to get glass over your app. Tune the two dials to taste.
-        pane = GlassPane(self, material=GlassMaterial(thickness=0.6, frost=0.25))
+        # A content-friendly glass: a *thin* refracting rim (small bevel) keeps
+        # the interior a clean, legible surface for text, while a little frost
+        # softens the busy app behind it. (The wide-bevel default look is tuned
+        # for the dramatic full-window desktop pane.)
+        pane = GlassPane(self, material=GlassMaterial(
+            thickness=0.5, frost=0.30, bevel=24.0, strength=16.0, pad=40.0,
+            ior_edge=4.0, chroma=0.10, disp_glow=70.0, disp_width=2.0,
+        ))
         lay = QVBoxLayout(pane.content)
         lay.setContentsMargins(34, 30, 34, 30)
         title = QLabel("Glass panel")
