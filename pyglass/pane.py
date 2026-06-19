@@ -283,6 +283,11 @@ class GlassPane(QWidget):
         elif key == Qt.Key.Key_L and isinstance(self._backdrop, ScreenBackdrop):
             self._backdrop.toggle_live()
             self._on_dials_changed()
+        elif key == Qt.Key.Key_C and isinstance(self._backdrop, ScreenBackdrop):
+            # Toggle screen-capture visibility: capturable (paused, visible to
+            # Snipping Tool / recorders) vs live (hidden from capture, no flicker).
+            self._backdrop.set_capturable(not self._backdrop.capturable)
+            self._on_dials_changed()
         elif self._dials_enabled and key == Qt.Key.Key_BracketLeft:
             self._nudge_dials(dt=-self.DIAL_STEP)
         elif self._dials_enabled and key == Qt.Key.Key_BracketRight:

@@ -156,8 +156,12 @@ re-slices the last capture each frame.
 - **Linux:** no portable self-exclusion, so it captures **once and stays paused**
   (press `R` to refresh) — no flicker. The dials still work live.
 
-> Being excluded from capture also means the glass window is invisible to screen
-> recording / sharing (OBS, Teams, etc.) — expected for an always-on-top overlay.
+> **Hidden from Snipping Tool / recorders?** That's the catch: excluding the
+> window from capture is exactly what lets it refresh live without flicker, but
+> the OS exclusion is global — it also hides from OBS, Teams, Snipping Tool, etc.
+> Press **`C`** to toggle: it drops the exclusion so the window *is* capturable
+> (going **paused** — `R` to refresh — since it can no longer grab live without
+> capturing itself), and back to hidden + flicker-free live when you toggle off.
 
 ## Platform support
 

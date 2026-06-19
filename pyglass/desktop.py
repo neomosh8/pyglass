@@ -117,11 +117,17 @@ class DesktopGlass(GlassPane):
         self._update_hint()
 
     def _update_hint(self) -> None:
-        live = "live ●" if getattr(self.backdrop, "live", False) else "paused"
+        bd = self.backdrop
+        if getattr(bd, "capturable", False):
+            mode = "capturable ◌ (paused · R refresh)"
+        elif getattr(bd, "live", False):
+            mode = "live ●"
+        else:
+            mode = "paused"
         m = self.material
         self._hint.setText(
-            f"drag · L: {live} · R: refresh · "
-            f"[ ] thick {m.thickness:.1f} · − + frost {m.frost:.1f} · Esc"
+            f"drag · C: {mode} · [ ] thick {m.thickness:.1f} · "
+            f"− + frost {m.frost:.1f} · Esc"
         )
 
     def closeEvent(self, event) -> None:

@@ -38,25 +38,26 @@ from .refract import qimage_to_array
 _SCREENCAPTURE = shutil.which("screencapture") if sys.platform == "darwin" else None
 
 
-def exclude_from_capture(widget: QWidget) -> bool:
-    """Exclude ``widget``'s native window from OS screen capture.
+def exclude_from_capture(widget: QWidget, exclude: bool = True) -> bool:
+    """Exclude (or re-include) ``widget``'s native window from OS screen capture.
 
     When excluded, a live screen grab skips the window, so the backdrop can
-    refresh *without* first hiding it — live, with no flicker. Returns ``True``
-    on success.
+    refresh *without* first hiding it — live, with no flicker. Pass
+    ``exclude=False`` to undo it (e.g. so the window can be screen-recorded).
+    Returns ``True`` on success.
 
-    * **macOS** — ``NSWindowSharingNone`` via the Obj-C runtime (so the system
-      ``screencapture`` skips it).
-    * **Windows** — ``SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`` (Win10
-      2004+/Win11), which DWM honours even for Qt's ``grabWindow`` path.
+    * **macOS** — ``NSWindow.sharingType`` (None to exclude, ReadOnly to allow).
+    * **Windows** — ``SetWindowDisplayAffinity`` with ``WDA_EXCLUDEFROMCAPTURE``
+      (Win10 2004+/Win11, honoured by DWM even for Qt's ``grabWindow``) or
+      ``WDA_NONE``.
 
     Returns ``False`` elsewhere (or if the call fails — e.g. older Windows), so
     the caller falls back to a paused, grab-on-demand snapshot rather than a
     flickering periodic hide-grab-show.
 
-    Side effect (same as macOS's sharing type): an excluded window is also
-    invisible to other screen capture — screen recording, sharing, OBS — which
-    is usually fine for an always-on-top glass overlay.
+    Note: an excluded window is invisible to *all* screen capture — recording,
+    sharing, OBS, Snipping Tool — not just our own grab; the OS exclusion is
+    global. Toggle ``exclude=False`` when you need to capture it.
     """
     try:
         if sys.platform == "darwin":
@@ -73,16 +74,19 @@ def exclude_from_capture(widget: QWidget) -> bool:
                 return False
             send.restype = None
             send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong]
-            send(ctypes.c_void_p(window), objc.sel_registerName(b"setSharingType:"), 0)
+            # NSWindowSharingNone = 0, NSWindowSharingReadOnly = 1
+            send(ctypes.c_void_p(window), objc.sel_registerName(b"setSharingType:"),
+                 0 if exclude else 1)
             return True
 
         if sys.platform == "win32":
             user32 = ctypes.windll.user32
             user32.SetWindowDisplayAffinity.argtypes = [ctypes.c_void_p, ctypes.c_uint]
             user32.SetWindowDisplayAffinity.restype = ctypes.c_bool
-            WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            WDA_NONE, WDA_EXCLUDEFROMCAPTURE = 0x00000000, 0x00000011
             return bool(user32.SetWindowDisplayAffinity(
-                ctypes.c_void_p(int(widget.winId())), WDA_EXCLUDEFROMCAPTURE))
+                ctypes.c_void_p(int(widget.winId())),
+                WDA_EXCLUDEFROMCAPTURE if exclude else WDA_NONE))
     except Exception:
         return False
     return False
@@ -249,6 +253,24 @@ class ScreenBackdrop(Backdrop):
         else:
             self._timer.stop()
 
+    @property
+    def capturable(self) -> bool:
+        """True when the window is NOT excluded — visible to screen capture
+        (Snipping Tool, recorders), at the cost of not being able to refresh live."""
+        return not self._excluded
+
+    def set_capturable(self, capturable: bool) -> None:
+        """Drop / restore the capture exclusion. Capturable → visible to screen
+        recording but paused (the last frame stays; ``R`` re-grabs). Not
+        capturable → hidden from capture but live + flicker-free again."""
+        ok = exclude_from_capture(self._widget, exclude=not capturable)
+        if ok:
+            self._excluded = not capturable
+        if self.live:
+            self.start()       # excluded again → resume cheap live capture
+        else:
+            self.stop()        # capturable → pause; keep the last frame on screen
+
     def toggle_live(self) -> None:
         # Only meaningful when excluded; without exclusion a live grab flickers.
         if self._excluded:
@@ -354,9 +376,10 @@ class ScreenBackdrop(Backdrop):
         """Pause live capture and cache the whole desktop, so dragging re-slices
         it smoothly (no per-frame grab hitching the motion)."""
         self._timer.stop()
-        # Only the Windows excluded path caches a sub-rect; grab the full desktop
-        # so a drag can't run off its edge. macOS/paused already cache full-screen.
-        if self._excluded and not self._use_screencapture:
+        # The grabWindow path may be caching a sub-rect (live) or a stale frame;
+        # grab the whole desktop so a drag can't run off its edge. macOS already
+        # caches full-screen via screencapture, so nothing to do there.
+        if not self._use_screencapture:
             self._prev = None
             self._grab_sync(full=True)
 
