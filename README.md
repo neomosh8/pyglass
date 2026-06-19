@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/neomosh8/pyglass.svg?style=social)](https://github.com/neomosh8/pyglass)
 
-![PyGlass refracting the live desktop](docs/desktop_glass.png)
+![PyGlass refracting the live desktop](https://raw.githubusercontent.com/neomosh8/pyglass/main/docs/desktop_glass.png)
 
 > I couldn't sleep one night, so I sat down with Claude Code and tried to
 > replicate Apple's "liquid glass" — for real, in a plain **PyQt6 + numpy** stack
@@ -62,11 +62,11 @@ adjust frost, `Esc` closes.
 
 | In-app modal | The frosted demo popup |
 | --- | --- |
-| ![glass modal over an app](docs/in_app_modal.png) | ![frosted refractive popup](docs/demo_popup.png) |
+| ![glass modal over an app](https://raw.githubusercontent.com/neomosh8/pyglass/main/docs/in_app_modal.png) | ![frosted refractive popup](https://raw.githubusercontent.com/neomosh8/pyglass/main/docs/demo_popup.png) |
 
 A glass card refracting a **live, animated** scene (see [`examples/recipes.py`](examples/recipes.py)):
 
-![live glass over a moving scene](docs/recipes_live.png)
+![live glass over a moving scene](https://raw.githubusercontent.com/neomosh8/pyglass/main/docs/recipes_live.png)
 
 ## The two dials
 
