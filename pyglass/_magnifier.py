@@ -121,6 +121,7 @@ class MagnifierCapture:
         _mag.MagSetImageScalingCallback.restype = wintypes.BOOL
         _mag.MagSetImageScalingCallback.argtypes = [wintypes.HWND, _SCALECB]
 
+        self._exclude = None
         self.set_exclude(exclude_widget)
         self._frame = None
         self._cb = _SCALECB(self._on_scale)         # keep a ref alive
@@ -152,9 +153,17 @@ class MagnifierCapture:
         cls._class_atom = atom or True       # truthy even if already registered
 
     def set_exclude(self, widget) -> None:
-        """Set which window the magnifier should leave out of the capture."""
-        arr = (wintypes.HWND * 1)(int(widget.winId()))
-        _mag.MagSetWindowFilterList(self._magw, _MW_FILTERMODE_EXCLUDE, 1, arr)
+        """Set which window the magnifier leaves out of the capture."""
+        self._exclude = widget
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        # Re-asserted before every grab: setting the filter once (before the
+        # magnifier is shown/sourced) doesn't reliably take, which let the glass
+        # leak into its own backdrop and pile up while stationary.
+        if self._exclude is not None:
+            arr = (wintypes.HWND * 1)(int(self._exclude.winId()))
+            _mag.MagSetWindowFilterList(self._magw, _MW_FILTERMODE_EXCLUDE, 1, arr)
 
     # ------------------------------------------------------------------ capture
     def _on_scale(self, hw, srcdata, srch, dstdata, dsth, unclip, clip, dirty):
@@ -175,6 +184,7 @@ class MagnifierCapture:
         if w < 1 or h < 1:
             return None
         self._frame = None
+        self._apply_filter()        # keep the excluded window out (must re-assert)
         # 1:1 capture: size the control to the source so there's no scaling.
         _user32.MoveWindow(self._magw, 0, 0, int(w), int(h), False)
         _mag.MagSetWindowSource(self._magw, _RECT(int(x), int(y), int(x + w), int(y + h)))
