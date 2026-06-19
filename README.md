@@ -10,8 +10,20 @@ a one-line widget for the common case, and the raw engine for custom widgets.
 ## Install
 
 ```bash
+pip install pyglass-qt          # from PyPI
+# or straight from GitHub:
+pip install "git+https://github.com/neomosh8/pyglass.git"
+```
+
+> The distribution is **`pyglass-qt`** (the name `pyglass` was taken on PyPI), but
+> you still `import pyglass`. Only PyQt6 + numpy are pulled in.
+
+To run the demos from a clone instead:
+
+```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt   # PyQt6 + numpy
+.venv/bin/python main.py
 ```
 
 ## Use it in your app

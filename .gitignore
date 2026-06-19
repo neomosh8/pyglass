@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 preview.png
 .DS_Store
+
+# Build / packaging artifacts
+build/
+dist/
+*.egg-info/
