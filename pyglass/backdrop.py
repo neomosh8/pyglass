@@ -39,38 +39,53 @@ _SCREENCAPTURE = shutil.which("screencapture") if sys.platform == "darwin" else 
 
 
 def exclude_from_capture(widget: QWidget) -> bool:
-    """Exclude ``widget``'s native window from OS screen capture (macOS only).
+    """Exclude ``widget``'s native window from OS screen capture.
 
-    Sets ``NSWindowSharingNone`` via the Obj-C runtime so ``screencapture``
-    skips the window — meaning a live grab can run *without* first hiding it, so
-    there's no flicker. Returns ``True`` on success.
+    When excluded, a live screen grab skips the window, so the backdrop can
+    refresh *without* first hiding it — live, with no flicker. Returns ``True``
+    on success.
 
-    Returns ``False`` everywhere else, so the caller falls back to a paused,
-    hide-grab-show snapshot (no periodic flicker). Windows has
-    ``SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)``, but it is not reliably
-    honoured by Qt's GDI ``grabWindow`` path, so we don't depend on it for live
-    refresh — enabling it there risks the glass capturing itself instead.
+    * **macOS** — ``NSWindowSharingNone`` via the Obj-C runtime (so the system
+      ``screencapture`` skips it).
+    * **Windows** — ``SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`` (Win10
+      2004+/Win11), which DWM honours even for Qt's ``grabWindow`` path.
+
+    Returns ``False`` elsewhere (or if the call fails — e.g. older Windows), so
+    the caller falls back to a paused, grab-on-demand snapshot rather than a
+    flickering periodic hide-grab-show.
+
+    Side effect (same as macOS's sharing type): an excluded window is also
+    invisible to other screen capture — screen recording, sharing, OBS — which
+    is usually fine for an always-on-top glass overlay.
     """
-    if sys.platform != "darwin":
-        return False
     try:
-        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
-        objc.sel_registerName.restype = ctypes.c_void_p
-        objc.sel_registerName.argtypes = [ctypes.c_char_p]
-        send = objc.objc_msgSend
+        if sys.platform == "darwin":
+            objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+            objc.sel_registerName.restype = ctypes.c_void_p
+            objc.sel_registerName.argtypes = [ctypes.c_char_p]
+            send = objc.objc_msgSend
 
-        view = ctypes.c_void_p(int(widget.winId()))      # NSView* on macOS
-        send.restype = ctypes.c_void_p
-        send.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-        window = send(view, objc.sel_registerName(b"window"))
-        if not window:
-            return False
-        send.restype = None
-        send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong]
-        send(ctypes.c_void_p(window), objc.sel_registerName(b"setSharingType:"), 0)
-        return True
+            view = ctypes.c_void_p(int(widget.winId()))      # NSView* on macOS
+            send.restype = ctypes.c_void_p
+            send.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            window = send(view, objc.sel_registerName(b"window"))
+            if not window:
+                return False
+            send.restype = None
+            send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong]
+            send(ctypes.c_void_p(window), objc.sel_registerName(b"setSharingType:"), 0)
+            return True
+
+        if sys.platform == "win32":
+            user32 = ctypes.windll.user32
+            user32.SetWindowDisplayAffinity.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            user32.SetWindowDisplayAffinity.restype = ctypes.c_bool
+            WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            return bool(user32.SetWindowDisplayAffinity(
+                ctypes.c_void_p(int(widget.winId())), WDA_EXCLUDEFROMCAPTURE))
     except Exception:
         return False
+    return False
 
 
 class Backdrop(QObject):

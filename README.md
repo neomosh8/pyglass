@@ -138,18 +138,26 @@ A parentless `GlassPane` (or `python main.py --desktop`) floats over your **live
 desktop and refracts whatever is behind it — all your windows, not just the
 wallpaper (that's the hero shot up top).
 
-- **macOS:** it shells out to the system `screencapture` (which, unlike Qt's
-  `grabWindow`, returns the full screen with every window) and excludes *itself*
-  from capture via `NSWindowSharingNone`. Because the window is excluded, the
-  backdrop **auto-refreshes live** with no flicker, and dragging stays smooth
-  (it re-slices the last capture each frame).
+The pane excludes **itself** from the capture, so it can re-grab the live screen
+**without hiding** — the backdrop stays live with no flicker, and dragging
+re-slices the last capture each frame.
+
+- **macOS:** shells out to the system `screencapture` (which, unlike Qt's
+  `grabWindow`, returns the full screen with every window) and excludes itself
+  via `NSWindowSharingNone`.
 
   > Needs Screen Recording permission (System Settings → Privacy & Security →
   > Screen Recording) for the terminal/app running Python.
 
-- **Windows / Linux:** Qt's `grabWindow` can't be told to exclude the window, so
-  a periodic re-grab would flicker. PyGlass therefore captures **once and stays
-  paused** (press `R` to refresh) — no flicker. The dials still work live.
+- **Windows:** uses `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` (Windows
+  10 2004+/11), which DWM honours even for Qt's `grabWindow` — so it's live and
+  flicker-free too; minimize an app behind it and the glass updates within ~1s.
+
+- **Linux:** no portable self-exclusion, so it captures **once and stays paused**
+  (press `R` to refresh) — no flicker. The dials still work live.
+
+> Being excluded from capture also means the glass window is invisible to screen
+> recording / sharing (OBS, Teams, etc.) — expected for an always-on-top overlay.
 
 ## Platform support
 
