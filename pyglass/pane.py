@@ -193,16 +193,21 @@ class GlassPane(QWidget):
     # ---------------------------------------------------------------- events
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if not self._configured:                # one-time setup
-            self._configured = True
-            if self._top_level:
-                self.center_on_screen()
-            elif not self._positioned:
-                self.center_in_parent()         # sensible default; move() to override
-            if isinstance(self._backdrop, ScreenBackdrop):
-                self._backdrop.configure()      # set up capture exclusion if possible
-        # (Re)start the backdrop on every show so a hidden→shown pane re-captures
-        # and resumes live updates. Deferred so geometry / native handle settle.
+        # First show ONLY. The (non-excluded) screen grab works by hide→grab→show,
+        # and a WidgetBackdrop hides this pane to grab its parent — both re-fire
+        # showEvent. Re-starting the backdrop here would then grab → hide/show →
+        # showEvent → grab … an endless hide/show loop (flicker). So configure and
+        # kick off the capture exactly once.
+        if self._configured:
+            return
+        self._configured = True
+        if self._top_level:
+            self.center_on_screen()
+        elif not self._positioned:
+            self.center_in_parent()             # sensible default; move() to override
+        if isinstance(self._backdrop, ScreenBackdrop):
+            self._backdrop.configure()          # set up capture exclusion if possible
+        # Deferred so geometry / native handle settle before the first grab.
         QTimer.singleShot(0, self._backdrop.start)
         self.setFocus()
         self._on_dials_changed()
