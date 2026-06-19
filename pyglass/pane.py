@@ -315,5 +315,5 @@ class GlassPane(QWidget):
         """Hook for subclasses to update a readout. No-op by default."""
 
     def closeEvent(self, event) -> None:
-        self._backdrop.stop()
+        self._backdrop.cleanup()        # stop updates + release native capture
         super().closeEvent(event)

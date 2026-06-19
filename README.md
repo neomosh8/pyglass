@@ -138,30 +138,34 @@ A parentless `GlassPane` (or `python main.py --desktop`) floats over your **live
 desktop and refracts whatever is behind it — all your windows, not just the
 wallpaper (that's the hero shot up top).
 
-The pane excludes **itself** from the capture, so it can re-grab the live screen
-**without hiding** — the backdrop stays live with no flicker, and dragging
-re-slices the last capture each frame.
+The pane keeps the glass out of its *own* capture (so it doesn't refract itself),
+which lets it re-grab the live screen **without hiding** — live, no flicker, and
+dragging re-slices the last grab each frame.
+
+- **Windows:** the **Magnification API** (`MagSetWindowFilterList` +
+  `MW_FILTERMODE_EXCLUDE`) captures the screen with the glass filtered out of
+  *only this* capture. So it's **live *and* fully recordable** — the window
+  stays visible to Snipping Tool / OBS / Teams — with no flicker and no
+  trade-off. Captures hardware-accelerated windows too. (Falls back to
+  `WDA_EXCLUDEFROMCAPTURE` on pre-2004 Windows; see the toggle note below.)
 
 - **macOS:** shells out to the system `screencapture` (which, unlike Qt's
   `grabWindow`, returns the full screen with every window) and excludes itself
-  via `NSWindowSharingNone`.
+  via `NSWindowSharingNone` — live and flicker-free.
 
   > Needs Screen Recording permission (System Settings → Privacy & Security →
-  > Screen Recording) for the terminal/app running Python.
-
-- **Windows:** uses `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` (Windows
-  10 2004+/11), which DWM honours even for Qt's `grabWindow` — so it's live and
-  flicker-free too; minimize an app behind it and the glass updates within ~1s.
+  > Screen Recording). The macOS exclusion is *global*, so the window is hidden
+  > from other recorders; press **`C`** to make it capturable (paused) and back.
+  > (A ScreenCaptureKit backend for live-and-recordable on macOS is on the list.)
 
 - **Linux:** no portable self-exclusion, so it captures **once and stays paused**
   (press `R` to refresh) — no flicker. The dials still work live.
 
-> **Hidden from Snipping Tool / recorders?** That's the catch: excluding the
-> window from capture is exactly what lets it refresh live without flicker, but
-> the OS exclusion is global — it also hides from OBS, Teams, Snipping Tool, etc.
-> Press **`C`** to toggle: it drops the exclusion so the window *is* capturable
-> (going **paused** — `R` to refresh — since it can no longer grab live without
-> capturing itself), and back to hidden + flicker-free live when you toggle off.
+> **`C` — capture toggle** (macOS / Windows-fallback only): the global
+> `WDA`/`NSWindowSharingNone` exclusion hides the window from *all* capture, so
+> `C` drops it (window becomes recordable but **paused** — `R` to refresh) and
+> toggles back to hidden + live. On Windows the Magnification path needs none of
+> this — it's recordable while live.
 
 ## Platform support
 

@@ -130,6 +130,10 @@ class Backdrop(QObject):
     def stop(self) -> None:
         """Stop any live updates."""
 
+    def cleanup(self) -> None:
+        """Release native resources (called when the pane closes). Default: stop."""
+        self.stop()
+
     def prepare_drag(self) -> None:
         """Called when the pane starts being dragged. Default: nothing (the
         cached frame already covers the whole source, so re-slicing is smooth)."""
@@ -222,6 +226,7 @@ class ScreenBackdrop(Backdrop):
         self._idle_grabs = 0
         self._idle_backoff = 8
 
+        self._mag = None        # Windows Magnification capturer (set in configure)
         self._proc = QProcess(self)
         self._proc.finished.connect(self._on_grab_done)
         self._timer = QTimer(self)
@@ -239,10 +244,21 @@ class ScreenBackdrop(Backdrop):
         return self._live and self._excluded
 
     def configure(self) -> bool:
-        """Attempt to exclude the window from capture. Returns whether it stuck.
+        """Set up clean live capture. Returns whether live (flicker-free) is possible.
 
-        When excluded, live auto-refresh can run flicker-free; otherwise the
-        backdrop stays paused (one grab, refresh on demand)."""
+        Preferred on Windows: the Magnification API, which excludes the glass from
+        *our* capture only — so the pane refracts the live desktop without grabbing
+        itself, AND stays visible to screen recording. Otherwise fall back to the
+        global capture exclusion (macOS ``screencapture``; or none → paused)."""
+        if sys.platform == "win32":
+            try:
+                from ._magnifier import MagnifierCapture, available
+                if available():
+                    self._mag = MagnifierCapture(self._widget)
+                    self._excluded = True   # capture is clean (no hide, no global hide)
+                    return True
+            except Exception:
+                self._mag = None
         self._excluded = exclude_from_capture(self._widget)
         return self._excluded
 
@@ -254,15 +270,24 @@ class ScreenBackdrop(Backdrop):
             self._timer.stop()
 
     @property
+    def recordable(self) -> bool:
+        """True if the window is visible to screen recording (Snipping Tool, OBS).
+        With the Magnification capturer this is always true *and* it stays live."""
+        return self._mag is not None or not self._excluded
+
+    @property
     def capturable(self) -> bool:
-        """True when the window is NOT excluded — visible to screen capture
-        (Snipping Tool, recorders), at the cost of not being able to refresh live."""
-        return not self._excluded
+        """True when the backdrop is NOT live (the toggle's paused state). With the
+        magnifier the window is recordable while still live, so there's nothing to
+        toggle — see :attr:`recordable`."""
+        return self._mag is None and not self._excluded
 
     def set_capturable(self, capturable: bool) -> None:
-        """Drop / restore the capture exclusion. Capturable → visible to screen
-        recording but paused (the last frame stays; ``R`` re-grabs). Not
-        capturable → hidden from capture but live + flicker-free again."""
+        """Toggle the global capture-exclusion fallback (no magnifier): capturable
+        → visible to recording but paused (``R`` re-grabs); not → hidden but live.
+        No-op when the magnifier is active (already recordable *and* live)."""
+        if self._mag is not None:
+            return
         ok = exclude_from_capture(self._widget, exclude=not capturable)
         if ok:
             self._excluded = not capturable
@@ -286,10 +311,36 @@ class ScreenBackdrop(Backdrop):
         self._timer.stop()
 
     def refresh(self) -> None:
-        if self._excluded:
+        if self._mag is not None:
+            self._grab_mag()
+        elif self._excluded:
             self._start_grab()
         else:
             self._grab_sync()
+
+    def cleanup(self) -> None:
+        self._timer.stop()
+        if self._mag is not None:
+            try:
+                self._mag.close()
+            except Exception:
+                pass
+            self._mag = None
+
+    def _grab_mag(self, full: bool = False) -> None:
+        """Capture via the Magnification API (Windows): the live screen with the
+        glass filtered out — no hide, no global exclusion, stays recordable."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        dpr = screen.devicePixelRatio() or 1.0
+        r = screen.virtualGeometry() if full else self._capture_rect()
+        arr = self._mag.grab(
+            int(r.x() * dpr), int(r.y() * dpr),
+            int(r.width() * dpr), int(r.height() * dpr),
+        )
+        if arr is not None:
+            self._ingest_array(arr, r.topLeft(), dpr)
 
     def _load_snapshot(self) -> QImage | None:
         img = QImage(str(self._snap_path))
@@ -297,6 +348,9 @@ class ScreenBackdrop(Backdrop):
 
     def _start_grab(self) -> None:
         """Async full-screen capture (window excluded, so no hide → no flicker)."""
+        if self._mag is not None:
+            self._grab_mag()
+            return
         if self._proc.state() != QProcess.ProcessState.NotRunning:
             return
         if self._use_screencapture and _SCREENCAPTURE is not None:
@@ -376,11 +430,12 @@ class ScreenBackdrop(Backdrop):
         """Pause live capture and cache the whole desktop, so dragging re-slices
         it smoothly (no per-frame grab hitching the motion)."""
         self._timer.stop()
-        # The grabWindow path may be caching a sub-rect (live) or a stale frame;
-        # grab the whole desktop so a drag can't run off its edge. macOS already
-        # caches full-screen via screencapture, so nothing to do there.
-        if not self._use_screencapture:
-            self._prev = None
+        # A sub-rect/stale cache would clamp during a drag; grab the whole desktop
+        # so the move re-slices it smoothly. macOS already caches full-screen.
+        self._prev = None
+        if self._mag is not None:
+            self._grab_mag(full=True)
+        elif not self._use_screencapture:
             self._grab_sync(full=True)
 
     def end_drag(self) -> None:
@@ -389,7 +444,9 @@ class ScreenBackdrop(Backdrop):
         self.start()
 
     def _ingest(self, img: QImage, origin: QPoint, logical_w: int) -> None:
-        arr = qimage_to_array(img)
+        self._ingest_array(qimage_to_array(img), origin, img.width() / max(1, logical_w))
+
+    def _ingest_array(self, arr: np.ndarray, origin: QPoint, dpr: float) -> None:
         # Skip the (expensive) refract when the captured region is unchanged —
         # a static desktop costs only the grab + this compare, no re-render —
         # and ease the poll rate off once it's been still for a while.
@@ -404,6 +461,6 @@ class ScreenBackdrop(Backdrop):
             self._timer.setInterval(self._fast_ms)      # change seen → snap responsive
         self._prev = arr
         self._origin = origin
-        self._dpr = img.width() / max(1, logical_w)
+        self._dpr = dpr
         self._array = arr
         self.changed.emit()
