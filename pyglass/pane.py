@@ -238,7 +238,9 @@ class GlassPane(QWidget):
                 self._dragging = True
                 self._drag_offset = event.globalPosition().toPoint() - self._top_left_global()
                 self.content.setCursor(Qt.CursorShape.ClosedHandCursor)
-                self._backdrop.stop()           # pause any live capture during drag
+                # Keep a live backdrop running through the drag: its cheap grab
+                # follows the window, so the glass keeps showing the desktop
+                # behind it as you move (MouseMove re-slices the latest grab).
                 return True
             if et == QEvent.Type.MouseMove and self._dragging:
                 self._move_to(event.globalPosition().toPoint() - self._drag_offset)

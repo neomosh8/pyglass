@@ -29,7 +29,7 @@ from pathlib import Path
 from tempfile import gettempdir
 
 import numpy as np
-from PyQt6.QtCore import QObject, QPoint, QProcess, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QPoint, QProcess, QRect, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -186,16 +186,30 @@ class ScreenBackdrop(Backdrop):
     is_live = True
 
     def __init__(
-        self, widget: QWidget, *, interval_ms: int = 900, parent: QObject | None = None
+        self, widget: QWidget, *, interval_ms: int | None = None,
+        capture_margin: int = 150, parent: QObject | None = None
     ) -> None:
         super().__init__(parent)
         self._widget = widget
         self._excluded = False
         self._live = True
         self._use_screencapture = _SCREENCAPTURE is not None
+        self._capture_margin = capture_margin   # logical px grabbed around the window
+        self._prev = None                        # last grabbed array, for change-skip
         # Per-instance snapshot file so multiple desktop panes don't clobber /
         # capture each other through a shared path.
         self._snap_path = Path(gettempdir()) / f"pyglass_live_{id(self)}.png"
+
+        # The grabWindow path (Windows/Linux) is cheap enough to run live; the
+        # macOS path spawns a `screencapture` process each frame, so it stays slow.
+        if interval_ms is None:
+            interval_ms = 900 if self._use_screencapture else 120
+        # Adaptive cadence: poll fast while the desktop is changing, ease off when
+        # it's static (so an idle glass doesn't peg the CPU), snap back on change.
+        self._fast_ms = interval_ms
+        self._slow_ms = max(interval_ms * 2, 300)
+        self._idle_grabs = 0
+        self._idle_backoff = 8
 
         self._proc = QProcess(self)
         self._proc.finished.connect(self._on_grab_done)
@@ -262,17 +276,34 @@ class ScreenBackdrop(Backdrop):
             self._grab_sync()
 
     def _on_grab_done(self, *_args) -> None:
+        # macOS `screencapture` path: a full-virtual-desktop PNG.
         img = self._load_snapshot()
         if img is not None:
-            self._ingest(img)
+            screen = QApplication.primaryScreen()
+            if screen is None:
+                return
+            vgeo = screen.virtualGeometry()
+            self._ingest(img, vgeo.topLeft(), vgeo.width())
+
+    def _capture_rect(self) -> QRect:
+        """Just the region behind the window (+margin for the refraction reach),
+        so the per-frame grab is a fraction of a full-screen capture."""
+        m = self._capture_margin
+        rect = self._widget.frameGeometry().adjusted(-m, -m, m, m)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            rect = rect.intersected(screen.virtualGeometry())
+        return rect
 
     def _grab_sync(self) -> None:
-        """Fallback grab when the window can't be excluded: hide, shoot, show."""
+        """Grab via Qt. Hides the window first only when it isn't excluded from
+        capture (otherwise it would grab itself); excluded → no hide → no flicker."""
         w = self._widget
         must_hide = w.isVisible() and not self._excluded
         if must_hide:
             w.hide()
             QApplication.processEvents()
+        img = origin = logical_w = None
         try:
             if self._use_screencapture and _SCREENCAPTURE is not None:
                 subprocess.run(
@@ -280,27 +311,49 @@ class ScreenBackdrop(Backdrop):
                     check=False, timeout=5,
                 )
                 img = self._load_snapshot()
+                screen = QApplication.primaryScreen()
+                if img is not None and screen is not None:
+                    vgeo = screen.virtualGeometry()
+                    origin, logical_w = vgeo.topLeft(), vgeo.width()
             else:
                 screen = QApplication.primaryScreen()
-                img = None if screen is None else screen.grabWindow(0).toImage()
+                if screen is not None and self._excluded:
+                    # Live: grab only the region behind the window (cheap, tracks
+                    # the window as it moves) — the window is excluded, so this
+                    # shows the desktop, not the glass.
+                    r = self._capture_rect()
+                    img = screen.grabWindow(0, r.x(), r.y(), r.width(), r.height()).toImage()
+                    origin, logical_w = r.topLeft(), r.width()
+                elif screen is not None:
+                    # Paused fallback (can't exclude): one full-screen grab so a
+                    # drag can re-slice it smoothly.
+                    vgeo = screen.virtualGeometry()
+                    img = screen.grabWindow(0).toImage()
+                    origin, logical_w = vgeo.topLeft(), vgeo.width()
         except Exception:
             img = None
         if must_hide:
             w.show()
             w.raise_()
-        if img is not None and not img.isNull():
-            self._ingest(img)
+        if img is not None and not img.isNull() and origin is not None:
+            self._ingest(img, origin, logical_w)
 
-    def _ingest(self, img: QImage) -> None:
-        screen = QApplication.primaryScreen()
-        if screen is None:
+    def _ingest(self, img: QImage, origin: QPoint, logical_w: int) -> None:
+        arr = qimage_to_array(img)
+        # Skip the (expensive) refract when the captured region is unchanged —
+        # a static desktop costs only the grab + this compare, no re-render —
+        # and ease the poll rate off once it's been still for a while.
+        if (self._prev is not None and self._prev.shape == arr.shape
+                and np.array_equal(self._prev, arr)):
+            self._idle_grabs += 1
+            if self._idle_grabs == self._idle_backoff and self._timer.interval() != self._slow_ms:
+                self._timer.setInterval(self._slow_ms)
             return
-        # `screencapture` and grabWindow(0) both capture the whole *virtual*
-        # desktop (all monitors), with the image origin at the virtual top-left.
-        # Anchor origin + scale to that virtual geometry, not just the primary
-        # screen, or the slice is offset / mis-scaled on multi-monitor setups.
-        vgeo = screen.virtualGeometry()
-        self._origin = vgeo.topLeft()
-        self._dpr = img.width() / max(1, vgeo.width())
-        self._array = qimage_to_array(img)
+        self._idle_grabs = 0
+        if self._timer.interval() != self._fast_ms:
+            self._timer.setInterval(self._fast_ms)      # change seen → snap responsive
+        self._prev = arr
+        self._origin = origin
+        self._dpr = img.width() / max(1, logical_w)
+        self._array = arr
         self.changed.emit()
