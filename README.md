@@ -49,6 +49,9 @@ rounded-rectangle signed distance field — see [`pyglass/refract.py`](pyglass/r
   to ~1 at the grazing rim. There the surface reflects a **virtual environment**
   (a horizon-biased ambient plus a warm top key light and a cool lower-left
   fill), giving bright, angle-dependent rim glints.
+* **Iridescent border glow** — on top of the per-channel fringe, a *lightened*
+  spectral colour is added along the rim, its hue cycling around the border so
+  each portion of every edge carries its own pale dispersed colour.
 * **Draggable** — grab the panel anywhere and move it; the refraction and
   reflections re-sample whatever is now behind it, in real time.
 
@@ -57,7 +60,7 @@ sample coordinates, Fresnel weight, reflected environment) is precomputed once
 into a `GlassKernel`; each frame only runs the bilinear gather.
 
 Tunable knobs live on `GlassPopup`: `BEVEL`, `STRENGTH`, `IOR_EDGE`,
-`IOR_INNER`, `CHROMA`, `REFLECT`, `F0`.
+`IOR_INNER`, `CHROMA`, `REFLECT`, `F0`, `DISP_GLOW`, `DISP_SAT`, `DISP_CYCLES`.
 
 ## Run
 
@@ -80,6 +83,32 @@ needed anywhere. Fonts fall back gracefully (SF Pro → Segoe UI → Arial), and
 device-pixel-ratio is handled, so it renders correctly on Windows HiDPI and
 Retina alike.
 
+## Desktop mode — glass over your real screen
+
+```bash
+.venv/bin/python main.py --desktop
+```
+
+A frameless, always-on-top pane floats over your **live** desktop and refracts
+whatever is behind it — all your windows, not just the wallpaper. **Drag** it
+around; **L** toggles live auto-refresh; **R** forces a refresh; **Esc** /
+**Got it** to close.
+
+How it captures the real screen (macOS):
+
+* It shells out to the system **`screencapture`** tool, which returns the full
+  screen *with every window* — unlike Qt's `grabWindow`, which on modern macOS
+  only returns the wallpaper.
+* The pane excludes **itself** from capture via `NSWindowSharingNone` (set on its
+  `NSWindow` through the Obj-C runtime), so the glass never refracts itself and
+  no hide/flicker is needed — which lets it auto-refresh live (~1 fps backdrop)
+  while dragging stays smooth (it re-slices the last capture each frame).
+
+> **Screen Recording permission:** `screencapture` still needs Screen Recording
+> permission (System Settings → Privacy & Security → Screen Recording) for the
+> terminal/app running Python. If only the wallpaper shows through, grant it and
+> relaunch. (On Windows/Linux it falls back to Qt's grab.)
+
 ## Render a preview without a display
 
 ```bash
@@ -94,7 +123,8 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python scripts/render_preview.py preview.png
 | `pyglass/blur.py` | Retina-correct Gaussian blur for `QPixmap`s (step 1) |
 | `pyglass/glass.py` | `GlassPopup` — the refractive glass overlay panel |
 | `pyglass/demo.py` | `DemoBackground` — colourful host scene + launch button |
-| `main.py` | Entry point |
+| `pyglass/desktop.py` | `DesktopGlass` — floating glass pane over the real screen |
+| `main.py` | Entry point (`--desktop` for desktop mode) |
 | `scripts/render_preview.py` | Offscreen PNG render for verification |
 
 ## Roadmap

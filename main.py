@@ -1,4 +1,8 @@
-"""PyGlass entry point — launches the demo window with the frosted-glass popup."""
+"""PyGlass entry point.
+
+    python main.py            # demo window with the painted scene
+    python main.py --desktop  # floating glass pane over your real desktop
+"""
 
 from __future__ import annotations
 
@@ -6,12 +10,19 @@ import sys
 
 from PyQt6.QtWidgets import QApplication
 
-from pyglass.demo import DemoBackground
-
 
 def main() -> int:
     app = QApplication(sys.argv)
-    window = DemoBackground()
+
+    if "--desktop" in sys.argv[1:]:
+        from pyglass.desktop import DesktopGlass
+
+        window = DesktopGlass()
+    else:
+        from pyglass.demo import DemoBackground
+
+        window = DemoBackground()
+
     window.show()
     return app.exec()
 

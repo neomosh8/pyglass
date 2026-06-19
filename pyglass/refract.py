@@ -62,6 +62,20 @@ def _normalize3(vec):
     return v / np.linalg.norm(v)
 
 
+def _hue_to_rgb(h):
+    """Vectorised fully-saturated HSV→RGB (value = 1). ``h`` in [0, 1)."""
+    h6 = (h % 1.0) * 6.0
+    i = np.floor(h6).astype(np.int32) % 6
+    f = (h6 - np.floor(h6)).astype(np.float32)
+    q = 1.0 - f
+    conds = [i == 0, i == 1, i == 2, i == 3, i == 4, i == 5]
+    rgb = np.empty(h.shape + (3,), np.float32)
+    rgb[..., 0] = np.select(conds, [1.0, q, 0.0, 0.0, f, 1.0])
+    rgb[..., 1] = np.select(conds, [f, 1.0, 1.0, q, 0.0, 0.0])
+    rgb[..., 2] = np.select(conds, [0.0, 0.0, f, 1.0, 1.0, q])
+    return rgb
+
+
 def _environment(rx, ry, rz):
     """Procedural environment sampled along reflection vector R = (rx, ry, rz).
 
@@ -109,6 +123,11 @@ class GlassKernel:
         chroma: float,
         reflect: float,
         f0: float,
+        disp_glow: float = 0.0,
+        disp_sat: float = 0.55,
+        disp_cycles: float = 1.0,
+        disp_phase: float = 0.0,
+        disp_width: float = 3.0,
     ):
         self.h = panel_h
         self.w = panel_w
@@ -173,6 +192,17 @@ class GlassKernel:
         self._one_minus_f = (1.0 - f)
         self._refl_term = (refl * f).astype(np.float32)
 
+        # Iridescent dispersion glow: a *lightened* spectral colour whose hue
+        # varies around the border, drawn as a thin sharp line right at the rim
+        # (falloff over `disp_width` px), so each portion of every border carries
+        # its own pale dispersed colour.
+        ang = np.arctan2(ny, nx)                         # direction around rim
+        hue = (ang / (2.0 * np.pi) + 0.5) * disp_cycles + disp_phase
+        spectral = _hue_to_rgb(hue)                      # vivid spectrum
+        light = spectral * disp_sat + (1.0 - disp_sat)   # mix to white → pastel
+        line = np.where(inside, np.clip(1.0 - d / disp_width, 0.0, 1.0), 0.0)
+        self._disp_glow = (light * (line * disp_glow)[..., None]).astype(np.float32)
+
     def _precompute_sample(self, sx, sy):
         """Cache clamped integer corners + fractional weights for a sample grid.
 
@@ -205,6 +235,7 @@ class GlassKernel:
             out[..., c] = top * d["omfy"] + bot * d["fy"]
 
         out[..., :3] = out[..., :3] * self._one_minus_f + self._refl_term
+        out[..., :3] += self._disp_glow        # additive iridescent rim
         np.clip(out[..., :3], 0.0, 255.0, out[..., :3])
         out[..., 3] = 255.0
         return out.astype(np.uint8)

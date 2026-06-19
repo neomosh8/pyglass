@@ -79,6 +79,10 @@ class GlassPopup(QWidget):
     CHROMA = 0.11     # per-wavelength IOR spread (chromatic dispersion)
     REFLECT = 1.0     # environment-reflection intensity
     F0 = 0.035        # Fresnel reflectance at normal incidence
+    DISP_GLOW = 150   # additive iridescent spectral line at the border (0..255)
+    DISP_SAT = 0.55   # spectral saturation (lower = lighter / more pastel)
+    DISP_CYCLES = 1.0  # hue cycles around the border
+    DISP_WIDTH = 2.5  # thickness of the spectral edge line (logical px)
 
     def __init__(self, host: QWidget):
         super().__init__(host)
@@ -236,6 +240,10 @@ class GlassPopup(QWidget):
             chroma=self.CHROMA,
             reflect=self.REFLECT,
             f0=self.F0,
+            disp_glow=self.DISP_GLOW,
+            disp_sat=self.DISP_SAT,
+            disp_cycles=self.DISP_CYCLES,
+            disp_width=self.DISP_WIDTH * dpr,
         )
         self._refract()
 
