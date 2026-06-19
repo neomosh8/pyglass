@@ -226,7 +226,9 @@ class ScreenBackdrop(Backdrop):
         self._idle_grabs = 0
         self._idle_backoff = 8
 
-        self._mag = None        # Windows Magnification capturer (set in configure)
+        # Platform capturer that excludes the glass from *our* stream only
+        # (Windows Magnification / macOS ScreenCaptureKit) — set in configure().
+        self._capturer = None
         self._proc = QProcess(self)
         self._proc.finished.connect(self._on_grab_done)
         self._timer = QTimer(self)
@@ -246,21 +248,39 @@ class ScreenBackdrop(Backdrop):
     def configure(self) -> bool:
         """Set up clean live capture. Returns whether live (flicker-free) is possible.
 
-        Preferred on Windows: the Magnification API, which excludes the glass from
-        *our* capture only — so the pane refracts the live desktop without grabbing
-        itself, AND stays visible to screen recording. Otherwise fall back to the
-        global capture exclusion (macOS ``screencapture``; or none → paused)."""
-        if sys.platform == "win32":
-            try:
-                from ._magnifier import MagnifierCapture, available
-                if available():
-                    self._mag = MagnifierCapture(self._widget)
-                    self._excluded = True   # capture is clean (no hide, no global hide)
-                    return True
-            except Exception:
-                self._mag = None
+        Preferred: a per-stream window-excluding capturer — the **Magnification
+        API** on Windows, **ScreenCaptureKit** on macOS — which excludes the glass
+        from *our* capture only, so the pane refracts the live desktop without
+        grabbing itself AND stays visible to screen recording. Otherwise fall back
+        to the global capture exclusion (macOS ``screencapture`` +
+        ``NSWindowSharingNone``; or none → paused)."""
+        cap = self._make_capturer()
+        if cap is not None:
+            self._capturer = cap
+            self._excluded = True       # capture is clean (no hide, no global hide)
+            # A real capturer streams continuously — poll fast, not at the slow
+            # `screencapture` CLI cadence.
+            self._fast_ms = 120
+            self._slow_ms = 300
+            self._timer.setInterval(self._fast_ms)
+            return True
         self._excluded = exclude_from_capture(self._widget)
         return self._excluded
+
+    def _make_capturer(self):
+        """Build the platform window-excluding capturer, or None if unavailable."""
+        try:
+            if sys.platform == "win32":
+                from ._magnifier import MagnifierCapture, available
+                if available():
+                    return MagnifierCapture(self._widget)
+            elif sys.platform == "darwin":
+                from ._screencapturekit import ScreenCaptureKitCapture, available
+                if available():
+                    return ScreenCaptureKitCapture(self._widget)
+        except Exception:
+            return None
+        return None
 
     def set_live(self, on: bool) -> None:
         self._live = on
@@ -272,21 +292,21 @@ class ScreenBackdrop(Backdrop):
     @property
     def recordable(self) -> bool:
         """True if the window is visible to screen recording (Snipping Tool, OBS).
-        With the Magnification capturer this is always true *and* it stays live."""
-        return self._mag is not None or not self._excluded
+        With a per-stream capturer this is always true *and* it stays live."""
+        return self._capturer is not None or not self._excluded
 
     @property
     def capturable(self) -> bool:
-        """True when the backdrop is NOT live (the toggle's paused state). With the
-        magnifier the window is recordable while still live, so there's nothing to
-        toggle — see :attr:`recordable`."""
-        return self._mag is None and not self._excluded
+        """True when the backdrop is NOT live (the toggle's paused state). With a
+        per-stream capturer the window is recordable while still live, so there's
+        nothing to toggle — see :attr:`recordable`."""
+        return self._capturer is None and not self._excluded
 
     def set_capturable(self, capturable: bool) -> None:
-        """Toggle the global capture-exclusion fallback (no magnifier): capturable
+        """Toggle the global capture-exclusion fallback (no capturer): capturable
         → visible to recording but paused (``R`` re-grabs); not → hidden but live.
-        No-op when the magnifier is active (already recordable *and* live)."""
-        if self._mag is not None:
+        No-op when a per-stream capturer is active (already recordable *and* live)."""
+        if self._capturer is not None:
             return
         ok = exclude_from_capture(self._widget, exclude=not capturable)
         if ok:
@@ -311,8 +331,8 @@ class ScreenBackdrop(Backdrop):
         self._timer.stop()
 
     def refresh(self) -> None:
-        if self._mag is not None:
-            self._grab_mag()
+        if self._capturer is not None:
+            self._grab_capturer()
         elif self._excluded:
             self._start_grab()
         else:
@@ -320,22 +340,23 @@ class ScreenBackdrop(Backdrop):
 
     def cleanup(self) -> None:
         self._timer.stop()
-        if self._mag is not None:
+        if self._capturer is not None:
             try:
-                self._mag.close()
+                self._capturer.close()
             except Exception:
                 pass
-            self._mag = None
+            self._capturer = None
 
-    def _grab_mag(self, full: bool = False) -> None:
-        """Capture via the Magnification API (Windows): the live screen with the
-        glass filtered out — no hide, no global exclusion, stays recordable."""
+    def _grab_capturer(self, full: bool = False) -> None:
+        """Capture via the per-stream capturer (Windows Magnification / macOS
+        ScreenCaptureKit): the live screen with the glass filtered out — no hide,
+        no global exclusion, stays recordable."""
         screen = QApplication.primaryScreen()
         if screen is None:
             return
         dpr = screen.devicePixelRatio() or 1.0
         r = screen.virtualGeometry() if full else self._capture_rect()
-        arr = self._mag.grab(
+        arr = self._capturer.grab(
             int(r.x() * dpr), int(r.y() * dpr),
             int(r.width() * dpr), int(r.height() * dpr),
         )
@@ -348,8 +369,8 @@ class ScreenBackdrop(Backdrop):
 
     def _start_grab(self) -> None:
         """Async full-screen capture (window excluded, so no hide → no flicker)."""
-        if self._mag is not None:
-            self._grab_mag()
+        if self._capturer is not None:
+            self._grab_capturer()
             return
         if self._proc.state() != QProcess.ProcessState.NotRunning:
             return
@@ -433,8 +454,8 @@ class ScreenBackdrop(Backdrop):
         # A sub-rect/stale cache would clamp during a drag; grab the whole desktop
         # so the move re-slices it smoothly. macOS already caches full-screen.
         self._prev = None
-        if self._mag is not None:
-            self._grab_mag(full=True)
+        if self._capturer is not None:
+            self._grab_capturer(full=True)
         elif not self._use_screencapture:
             self._grab_sync(full=True)
 

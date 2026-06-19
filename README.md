@@ -30,13 +30,16 @@ and an optional frosted blur — all in numpy, no shaders, no native code.
 ## Install
 
 ```bash
-pip install pyglass-qt          # from PyPI
+pip install pyglass-qt              # from PyPI
+pip install "pyglass-qt[macos]"     # + ScreenCaptureKit (live+recordable desktop mode on macOS)
 # or straight from GitHub:
 pip install "git+https://github.com/neomosh8/pyglass.git"
 ```
 
 > The distribution is **`pyglass-qt`** (the name `pyglass` was already taken on
-> PyPI), but you still `import pyglass`. Only PyQt6 + numpy are pulled in.
+> PyPI), but you still `import pyglass`. The base install is just PyQt6 + numpy;
+> the `[macos]` extra adds PyObjC for ScreenCaptureKit (only used by desktop
+> mode on macOS 12.3+).
 
 ## Quick start
 
@@ -149,23 +152,28 @@ dragging re-slices the last grab each frame.
   trade-off. Captures hardware-accelerated windows too. (Falls back to
   `WDA_EXCLUDEFROMCAPTURE` on pre-2004 Windows; see the toggle note below.)
 
-- **macOS:** shells out to the system `screencapture` (which, unlike Qt's
-  `grabWindow`, returns the full screen with every window) and excludes itself
-  via `NSWindowSharingNone` — live and flicker-free.
+- **macOS:** **ScreenCaptureKit** (`SCContentFilter(display:excludingWindows:)`,
+  macOS 12.3+) streams the screen with the glass filtered out of *only this*
+  stream — the per-stream analog of the Windows magnifier. So it's **live *and*
+  fully recordable** (the window stays visible to QuickTime / OBS), with no
+  flicker. Needs the `[macos]` extra (`pip install "pyglass-qt[macos]"`, which
+  pulls PyObjC) and Screen Recording permission (System Settings → Privacy &
+  Security → Screen Recording).
 
-  > Needs Screen Recording permission (System Settings → Privacy & Security →
-  > Screen Recording). The macOS exclusion is *global*, so the window is hidden
-  > from other recorders; press **`C`** to make it capturable (paused) and back.
-  > (A ScreenCaptureKit backend for live-and-recordable on macOS is on the list.)
+  > **Fallback** (macOS < 12.3 or no PyObjC): the system `screencapture` CLI
+  > (which, unlike Qt's `grabWindow`, returns the full screen with every window)
+  > plus a *global* `NSWindowSharingNone` exclusion. That hides the window from
+  > all recorders, so press **`C`** to make it capturable (paused) and back.
 
 - **Linux:** no portable self-exclusion, so it captures **once and stays paused**
   (press `R` to refresh) — no flicker. The dials still work live.
 
-> **`C` — capture toggle** (macOS / Windows-fallback only): the global
-> `WDA`/`NSWindowSharingNone` exclusion hides the window from *all* capture, so
-> `C` drops it (window becomes recordable but **paused** — `R` to refresh) and
-> toggles back to hidden + live. On Windows the Magnification path needs none of
-> this — it's recordable while live.
+> **`C` — capture toggle** (fallback paths only): when the only option is a
+> *global* exclusion (`WDA_EXCLUDEFROMCAPTURE` / `NSWindowSharingNone`) it hides
+> the window from *all* capture, so `C` drops it (window becomes recordable but
+> **paused** — `R` to refresh) and toggles back to hidden + live. The per-stream
+> capturers — Windows Magnification and macOS ScreenCaptureKit — need none of
+> this: they're recordable while live, so `C` is a no-op there.
 
 ## Platform support
 

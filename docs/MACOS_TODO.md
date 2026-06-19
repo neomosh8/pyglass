@@ -1,5 +1,38 @@
 # macOS port TODO — live **and** recordable desktop glass
 
+> ## ✅ DONE (ScreenCaptureKit backend)
+>
+> Implemented in [`pyglass/_screencapturekit.py`](../pyglass/_screencapturekit.py)
+> and wired into [`ScreenBackdrop`](../pyglass/backdrop.py). macOS desktop glass
+> is now **live *and* recordable** — the SCStream excludes the glass via
+> `SCContentFilter(display:excludingWindows:)` (per-stream, not global), so the
+> pane refracts the live desktop without self-capture while staying visible to
+> QuickTime/OBS.
+>
+> - **Capturer hook generalized** — `ScreenBackdrop._mag` → `_capturer`
+>   (`grab`/`set_exclude`/`close`); `_grab_capturer()`. Windows magnifier
+>   unchanged. *(task 1)*
+> - **`_screencapturekit.py`** — `ScreenCaptureKitCapture` + `available()`;
+>   widget→`SCWindow` via `winId`→`NSView`→`NSWindow.windowNumber`; BGRA stream,
+>   delegate keeps the latest `CMSampleBuffer`, `grab()` reads its `CVPixelBuffer`
+>   (`base.as_buffer(stride*h)`) and crops (edge-replicated, BGRA→RGBA). *(2,3)*
+> - **`configure()`** prefers SCK on macOS, falls back to `screencapture` +
+>   `NSWindowSharingNone`; fast (~120 ms) cadence when a capturer is active;
+>   `recordable`/`C` behave like the magnifier path; hint shows
+>   "live ● · recordable". *(4,5,6)*
+> - **Packaging** — optional `[macos]` extra (PyObjC ScreenCaptureKit + Quartz),
+>   lazily imported. *(7)*
+> - **Verified** — a probe shows a magenta window absent from our SCK grab
+>   (fraction 0.0) yet present in a plain `screencapture` (1.0); the desktop pane
+>   reports `excluded/live/recordable = True` and refracts a real frame. *(8)*
+>
+> Open/deferred: multi-display picks the main `SCDisplay` (origin assumed 0,0);
+> per-frame filter re-assert was **not** needed (the probe showed no leakage).
+> Original plan below for reference.
+
+---
+
+
 On Windows the desktop pane is now live + flicker-free + smooth-drag + **recordable**
 + no self-capture, via the **Magnification API** ([`pyglass/_magnifier.py`](../pyglass/_magnifier.py)):
 `MagSetWindowFilterList(MW_FILTERMODE_EXCLUDE, [glass])` excludes the glass from
