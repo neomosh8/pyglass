@@ -238,9 +238,9 @@ class GlassPane(QWidget):
                 self._dragging = True
                 self._drag_offset = event.globalPosition().toPoint() - self._top_left_global()
                 self.content.setCursor(Qt.CursorShape.ClosedHandCursor)
-                # Keep a live backdrop running through the drag: its cheap grab
-                # follows the window, so the glass keeps showing the desktop
-                # behind it as you move (MouseMove re-slices the latest grab).
+                # Pause live capture and cache the full backdrop, so the move
+                # re-slices it cheaply (no per-frame grab → no heavy/janky drag).
+                self._backdrop.prepare_drag()
                 return True
             if et == QEvent.Type.MouseMove and self._dragging:
                 self._move_to(event.globalPosition().toPoint() - self._drag_offset)
@@ -250,13 +250,8 @@ class GlassPane(QWidget):
             if et == QEvent.Type.MouseButtonRelease and self._dragging:
                 self._dragging = False
                 self.content.setCursor(Qt.CursorShape.OpenHandCursor)
-                # Settle. A truly live (excluded) backdrop re-grabs fresh content
-                # and resumes its timer with no flicker; otherwise just re-slice
-                # the cached frame at the final position (no hide → no flicker).
-                if getattr(self._backdrop, "live", False):
-                    self._backdrop.start()
-                else:
-                    self._refract()
+                self._backdrop.end_drag()       # resume live updates
+                self._refract()                 # settle: full-quality at final spot
                 self.update()
                 return True
         return super().eventFilter(obj, event)

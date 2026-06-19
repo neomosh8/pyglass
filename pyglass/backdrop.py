@@ -126,6 +126,13 @@ class Backdrop(QObject):
     def stop(self) -> None:
         """Stop any live updates."""
 
+    def prepare_drag(self) -> None:
+        """Called when the pane starts being dragged. Default: nothing (the
+        cached frame already covers the whole source, so re-slicing is smooth)."""
+
+    def end_drag(self) -> None:
+        """Called when the drag ends. Default: nothing."""
+
 
 class WidgetBackdrop(Backdrop):
     """Refract the rendered content of a host :class:`QWidget`.
@@ -295,9 +302,13 @@ class ScreenBackdrop(Backdrop):
             rect = rect.intersected(screen.virtualGeometry())
         return rect
 
-    def _grab_sync(self) -> None:
+    def _grab_sync(self, full: bool = False) -> None:
         """Grab via Qt. Hides the window first only when it isn't excluded from
-        capture (otherwise it would grab itself); excluded → no hide → no flicker."""
+        capture (otherwise it would grab itself); excluded → no hide → no flicker.
+
+        ``full`` forces a whole-virtual-desktop grab even when live — used at the
+        start of a drag so the move can re-slice it smoothly without per-frame
+        grabs (the cheap sub-rect only covers the region right behind the pane)."""
         w = self._widget
         must_hide = w.isVisible() and not self._excluded
         if must_hide:
@@ -317,7 +328,7 @@ class ScreenBackdrop(Backdrop):
                     origin, logical_w = vgeo.topLeft(), vgeo.width()
             else:
                 screen = QApplication.primaryScreen()
-                if screen is not None and self._excluded:
+                if screen is not None and self._excluded and not full:
                     # Live: grab only the region behind the window (cheap, tracks
                     # the window as it moves) — the window is excluded, so this
                     # shows the desktop, not the glass.
@@ -325,8 +336,8 @@ class ScreenBackdrop(Backdrop):
                     img = screen.grabWindow(0, r.x(), r.y(), r.width(), r.height()).toImage()
                     origin, logical_w = r.topLeft(), r.width()
                 elif screen is not None:
-                    # Paused fallback (can't exclude): one full-screen grab so a
-                    # drag can re-slice it smoothly.
+                    # Full virtual-desktop grab: the paused fallback, and the
+                    # drag cache (so a move re-slices it smoothly, no clamp).
                     vgeo = screen.virtualGeometry()
                     img = screen.grabWindow(0).toImage()
                     origin, logical_w = vgeo.topLeft(), vgeo.width()
@@ -337,6 +348,22 @@ class ScreenBackdrop(Backdrop):
             w.raise_()
         if img is not None and not img.isNull() and origin is not None:
             self._ingest(img, origin, logical_w)
+
+    # ---- dragging -------------------------------------------------------
+    def prepare_drag(self) -> None:
+        """Pause live capture and cache the whole desktop, so dragging re-slices
+        it smoothly (no per-frame grab hitching the motion)."""
+        self._timer.stop()
+        # Only the Windows excluded path caches a sub-rect; grab the full desktop
+        # so a drag can't run off its edge. macOS/paused already cache full-screen.
+        if self._excluded and not self._use_screencapture:
+            self._prev = None
+            self._grab_sync(full=True)
+
+    def end_drag(self) -> None:
+        """Resume cheap live sub-rect capture after the drag settles."""
+        self._prev = None
+        self.start()
 
     def _ingest(self, img: QImage, origin: QPoint, logical_w: int) -> None:
         arr = qimage_to_array(img)
