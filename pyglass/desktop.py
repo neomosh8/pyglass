@@ -21,6 +21,7 @@ import ctypes.util
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from tempfile import gettempdir
 
@@ -40,8 +41,8 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from .glass import GlassPopup, ui_font
-from .refract import GlassKernel, qimage_to_array
+from .glass import ui_font
+from .refract import GlassKernel, GlassMaterial, qimage_to_array
 
 _SCREENCAPTURE = shutil.which("screencapture") if sys.platform == "darwin" else None
 _SNAP_PATH = Path(gettempdir()) / "pyglass_live.png"
@@ -85,6 +86,11 @@ class DesktopGlass(QWidget):
     RADIUS = 30
     MARGIN = 70           # window padding around the panel (room for the shadow)
 
+    # Two perceptual dials over the glass look (see refract.GlassMaterial).
+    THICKNESS = 0.5       # 0 wafer · 0.5 baseline · 1 deep block
+    FROST = 0.0           # 0 polished · 1 ground / milk glass
+    DIAL_STEP = 0.1       # keyboard nudge per keypress
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("PyGlass · desktop")
@@ -100,6 +106,8 @@ class DesktopGlass(QWidget):
         self._snap: np.ndarray | None = None
         self._screen_origin = QPoint(0, 0)
         self._dpr = 0.0
+        self._pad = 0
+        self._material = GlassMaterial(thickness=self.THICKNESS, frost=self.FROST)
         self._kernel: GlassKernel | None = None
         self._refracted: QPixmap | None = None
         self._out = None
@@ -201,7 +209,11 @@ class DesktopGlass(QWidget):
 
     def _update_hint(self) -> None:
         live = "live ●" if (self._live and self._excluded) else "paused"
-        self._hint.setText(f"drag · L: {live} · R: refresh · Esc: close")
+        m = self._material
+        self._hint.setText(
+            f"drag · L: {live} · R: refresh · "
+            f"[ ] thick {m.thickness:.1f} · − + frost {m.frost:.1f} · Esc"
+        )
 
     # ----------------------------------------------------------------- capture
     def _load_snapshot(self) -> QImage | None:
@@ -265,31 +277,17 @@ class DesktopGlass(QWidget):
     # ----------------------------------------------------------------- refraction
     def _build_kernel(self) -> None:
         dpr = self._dpr
-        g = GlassPopup  # reuse the tuned parameters
-        self._kernel = GlassKernel(
-            int(self.PANEL_W * dpr),
-            int(self.PANEL_H * dpr),
-            int(g.PAD * dpr),
-            self.RADIUS * dpr,
-            bevel=g.BEVEL * dpr,
-            strength=g.STRENGTH * dpr,
-            ior_edge=g.IOR_EDGE,
-            ior_inner=g.IOR_INNER,
-            chroma=g.CHROMA,
-            reflect=g.REFLECT,
-            f0=g.F0,
-            disp_glow=g.DISP_GLOW,
-            disp_sat=g.DISP_SAT,
-            disp_cycles=g.DISP_CYCLES,
-            disp_width=g.DISP_WIDTH * dpr,
+        self._pad = self._material.pad_px(dpr)
+        self._kernel = self._material.build_kernel(
+            int(self.PANEL_W * dpr), int(self.PANEL_H * dpr), self.RADIUS * dpr, dpr
         )
 
-    def _refract(self) -> None:
+    def _refract(self, fast: bool = False) -> None:
         snap = self._snap
         if snap is None or self._kernel is None:
             return
         dpr = self._dpr
-        pad = int(GlassPopup.PAD * dpr)
+        pad = self._pad
         pw = int(self.PANEL_W * dpr)
         ph = int(self.PANEL_H * dpr)
 
@@ -303,7 +301,7 @@ class DesktopGlass(QWidget):
         ys = np.clip(np.arange(gy, gy + ph + 2 * pad), 0, h - 1)
         padded = snap[np.ix_(ys, xs)]
 
-        self._out = self._kernel.apply(padded)
+        self._out = self._kernel.apply(padded, scatter=not fast)
         img = QImage(self._out.data, pw, ph, pw * 4, QImage.Format.Format_RGBA8888)
         img.setDevicePixelRatio(dpr)
         self._refracted = QPixmap.fromImage(img)
@@ -380,7 +378,7 @@ class DesktopGlass(QWidget):
                 return True
             if et == QEvent.Type.MouseMove and self._dragging:
                 self.move(event.globalPosition().toPoint() - self._drag_offset)
-                self._refract()
+                self._refract(fast=True)        # cheap sharp preview while moving
                 return True
             if et == QEvent.Type.MouseButtonRelease and self._dragging:
                 self._dragging = False
@@ -397,16 +395,44 @@ class DesktopGlass(QWidget):
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Escape:
+        key = event.key()
+        if key == Qt.Key.Key_Escape:
             self.close()
-        elif event.key() == Qt.Key.Key_R:
+        elif key == Qt.Key.Key_R:
             self.refresh()
-        elif event.key() == Qt.Key.Key_L and self._excluded:
+        elif key == Qt.Key.Key_L and self._excluded:
             self._live = not self._live
             self._timer.start() if self._live else self._timer.stop()
             self._update_hint()
+        elif key == Qt.Key.Key_BracketLeft:
+            self._nudge_dials(dt=-self.DIAL_STEP)
+        elif key == Qt.Key.Key_BracketRight:
+            self._nudge_dials(dt=+self.DIAL_STEP)
+        elif key == Qt.Key.Key_Minus:
+            self._nudge_dials(df=-self.DIAL_STEP)
+        elif key in (Qt.Key.Key_Equal, Qt.Key.Key_Plus):
+            self._nudge_dials(df=+self.DIAL_STEP)
         else:
             super().keyPressEvent(event)
+
+    def _nudge_dials(self, *, dt: float = 0.0, df: float = 0.0) -> None:
+        """Turn a dial, rebuild the glass and re-refract the current snapshot.
+
+        Thickness changes the slab geometry (and the capture margin), so the
+        kernel is rebuilt; both dials then re-refract the existing snapshot —
+        no re-grab, so it stays flicker-free even when paused.
+        """
+        # Snap to the step grid so repeated ±0.1 nudges stay clean (no 0.8999…
+        # drift, and frost returns to *exactly* 0 so its scatter path truly stops).
+        t = round(min(1.0, max(0.0, self._material.thickness + dt)), 4)
+        f = round(min(1.0, max(0.0, self._material.frost + df)), 4)
+        if (t, f) == (self._material.thickness, self._material.frost):
+            return
+        self._material = replace(self._material, thickness=t, frost=f)
+        if self._dpr > 0.0 and self._kernel is not None:
+            self._build_kernel()
+            self._refract()
+        self._update_hint()
 
     def closeEvent(self, event) -> None:
         self._timer.stop()

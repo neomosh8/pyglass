@@ -16,6 +16,8 @@ A single ``reveal`` property (0 → 1) drives a short open/close animation.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PyQt6.QtCore import (
     QEasingCurve,
     QEvent,
@@ -49,7 +51,7 @@ from PyQt6.QtWidgets import (
 
 import numpy as np
 
-from .refract import GlassKernel, qimage_to_array
+from .refract import GlassKernel, GlassMaterial, qimage_to_array
 
 
 def ui_font(point_size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
@@ -70,23 +72,18 @@ class GlassPopup(QWidget):
     PANEL_H = 280
     RADIUS = 28
 
-    # Refraction / reflection parameters (logical px; scaled by the dpr).
-    BEVEL = 56        # width of the refracting edge band
-    STRENGTH = 42.0   # glass thickness — depth the refracted ray is projected
-    PAD = 130         # backdrop margin captured so the rim can reach outside
-    IOR_EDGE = 5.0    # index of refraction at the very rim
-    IOR_INNER = 1.5   # index of refraction at the inner edge of the bevel
-    CHROMA = 0.11     # per-wavelength IOR spread (chromatic dispersion)
-    REFLECT = 1.0     # environment-reflection intensity
-    F0 = 0.035        # Fresnel reflectance at normal incidence
-    DISP_GLOW = 150   # additive iridescent spectral line at the border (0..255)
-    DISP_SAT = 0.55   # spectral saturation (lower = lighter / more pastel)
-    DISP_CYCLES = 1.0  # hue cycles around the border
-    DISP_WIDTH = 2.5  # thickness of the spectral edge line (logical px)
+    # The whole glass look is driven by two perceptual dials (see
+    # :class:`pyglass.refract.GlassMaterial`), which re-derive the dozen
+    # low-level refraction constants. The neutral pair below reproduces the
+    # original tuned appearance exactly.
+    THICKNESS = 0.5   # 0 wafer · 0.5 baseline · 1 deep block
+    FROST = 0.0       # 0 polished · 1 ground / milk glass
+    DIAL_STEP = 0.1   # keyboard nudge per keypress
 
     def __init__(self, host: QWidget):
         super().__init__(host)
         self._host = host
+        self.material = GlassMaterial(thickness=self.THICKNESS, frost=self.FROST)
         self._scene_arr: np.ndarray | None = None  # cached host scene (static)
         self._kernel: GlassKernel | None = None    # cached glass response
         self._dpr = 1.0
@@ -132,9 +129,10 @@ class GlassPopup(QWidget):
         title.setFont(ui_font(26, QFont.Weight.DemiBold))
         title.setStyleSheet("color: rgba(255,255,255,0.96);")
 
-        tag = QLabel("Physically-based glass · steps 1–4", self.panel)
+        tag = self._tag = QLabel("", self.panel)
         tag.setFont(ui_font(12))
         tag.setStyleSheet("color: rgba(255,255,255,0.62); letter-spacing: 0.4px;")
+        self._update_dial_readout()
 
         body = QLabel(
             "Drag me around. The bevelled rim refracts the background (IOR 1.5→5, "
@@ -223,34 +221,26 @@ class GlassPopup(QWidget):
             self._refract()
             return
 
-        self._dpr = dpr = scene.devicePixelRatio() or 1.0
+        self._dpr = scene.devicePixelRatio() or 1.0
         self._scene_arr = qimage_to_array(scene.toImage())
-        self._pad = int(self.PAD * dpr)
-        self._pw = int(self.PANEL_W * dpr)
-        self._ph = int(self.PANEL_H * dpr)
-        self._kernel = GlassKernel(
-            self._pw,
-            self._ph,
-            self._pad,
-            self.RADIUS * dpr,
-            bevel=self.BEVEL * dpr,
-            strength=self.STRENGTH * dpr,
-            ior_edge=self.IOR_EDGE,
-            ior_inner=self.IOR_INNER,
-            chroma=self.CHROMA,
-            reflect=self.REFLECT,
-            f0=self.F0,
-            disp_glow=self.DISP_GLOW,
-            disp_sat=self.DISP_SAT,
-            disp_cycles=self.DISP_CYCLES,
-            disp_width=self.DISP_WIDTH * dpr,
-        )
+        self._build_kernel()
         self._refract()
 
-    def _refract(self) -> None:
+    def _build_kernel(self) -> None:
+        """(Re)build the glass kernel for the current material + dpr against the
+        already-cached scene — no re-capture, so a dial change is cheap."""
+        dpr = self._dpr
+        self._pad = self.material.pad_px(dpr)
+        self._pw = int(self.PANEL_W * dpr)
+        self._ph = int(self.PANEL_H * dpr)
+        self._kernel = self.material.build_kernel(self._pw, self._ph, self.RADIUS * dpr, dpr)
+
+    def _refract(self, fast: bool = False) -> None:
         """Apply the cached kernel to the scene slice behind the panel.
 
-        Cheap enough to call on every drag frame — only a few gathers run here.
+        Cheap enough to call on every drag frame — only a few gathers run. Pass
+        ``fast=True`` to skip the frost scatter (blur/haze) for a sharp, cheap
+        preview while dragging; the full frosted result is rendered on release.
         """
         arr = self._scene_arr
         if arr is None or self._kernel is None:
@@ -275,7 +265,7 @@ class GlassPopup(QWidget):
             padded = arr[np.ix_(ys, xs)]
 
         # Keep the result buffer alive while QImage wraps it (no extra copy).
-        self._out = self._kernel.apply(padded)
+        self._out = self._kernel.apply(padded, scatter=not fast)
         img = QImage(
             self._out.data, pw, ph, pw * 4, QImage.Format.Format_RGBA8888
         )
@@ -404,12 +394,14 @@ class GlassPopup(QWidget):
             if et == QEvent.Type.MouseMove and self._dragging:
                 gp = event.globalPosition().toPoint()
                 self._set_home(self.mapFromGlobal(gp) - self._drag_offset)
-                self._refract()        # re-sample the backdrop at the new spot
+                self._refract(fast=True)   # cheap sharp preview at the new spot
                 self.update()
                 return True
             if et == QEvent.Type.MouseButtonRelease and self._dragging:
                 self._dragging = False
                 self.panel.setCursor(Qt.CursorShape.OpenHandCursor)
+                self._refract()            # settle: full-quality frosted result
+                self.update()
                 return True
         return super().eventFilter(obj, event)
 
@@ -418,10 +410,44 @@ class GlassPopup(QWidget):
             self.close_popup()
 
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Escape:
+        key = event.key()
+        if key == Qt.Key.Key_Escape:
             self.close_popup()
+        elif key == Qt.Key.Key_BracketLeft:
+            self._nudge_dials(dt=-self.DIAL_STEP)
+        elif key == Qt.Key.Key_BracketRight:
+            self._nudge_dials(dt=+self.DIAL_STEP)
+        elif key == Qt.Key.Key_Minus:
+            self._nudge_dials(df=-self.DIAL_STEP)
+        elif key in (Qt.Key.Key_Equal, Qt.Key.Key_Plus):
+            self._nudge_dials(df=+self.DIAL_STEP)
         else:
             super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------ dials
+    def _update_dial_readout(self) -> None:
+        m = self.material
+        self._tag.setText(
+            f"thickness {m.thickness:.2f}   ·   frost {m.frost:.2f}      [ ]  − +"
+        )
+
+    def _nudge_dials(self, *, dt: float = 0.0, df: float = 0.0) -> None:
+        """Turn a dial, rebuild the glass and re-refract the *cached* scene.
+
+        Snaps to the step grid so repeated ±0.1 nudges stay clean and frost
+        returns to exactly 0. Only the kernel is rebuilt — the host scene is not
+        re-captured (it's static), matching DesktopGlass.
+        """
+        t = round(min(1.0, max(0.0, self.material.thickness + dt)), 4)
+        f = round(min(1.0, max(0.0, self.material.frost + df)), 4)
+        if (t, f) == (self.material.thickness, self.material.frost):
+            return
+        self.material = replace(self.material, thickness=t, frost=f)
+        self._update_dial_readout()
+        if self._scene_arr is not None:
+            self._build_kernel()
+            self._refract()
+        self.update()
 
     def resizeEvent(self, _event) -> None:
         if self.isVisible():
