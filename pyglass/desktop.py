@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import shutil
 import subprocess
 import sys
+from pathlib import Path
+from tempfile import gettempdir
 
 import numpy as np
 
@@ -40,8 +43,8 @@ from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QVBo
 from .glass import GlassPopup, ui_font
 from .refract import GlassKernel, qimage_to_array
 
-_SCREENCAPTURE = "/usr/sbin/screencapture"
-_SNAP_PATH = "/tmp/pyglass_live.png"
+_SCREENCAPTURE = shutil.which("screencapture") if sys.platform == "darwin" else None
+_SNAP_PATH = Path(gettempdir()) / "pyglass_live.png"
 _LIVE_INTERVAL_MS = 900
 
 
@@ -103,6 +106,7 @@ class DesktopGlass(QWidget):
         self._dragging = False
         self._drag_offset = QPoint(0, 0)
         self._excluded = False
+        self._use_screencapture = _SCREENCAPTURE is not None
         self._live = True
 
         self._proc = QProcess(self)
@@ -200,15 +204,22 @@ class DesktopGlass(QWidget):
         self._hint.setText(f"drag · L: {live} · R: refresh · Esc: close")
 
     # ----------------------------------------------------------------- capture
+    def _load_snapshot(self) -> QImage | None:
+        img = QImage(str(_SNAP_PATH))
+        return None if img.isNull() else img
+
     def _start_grab(self) -> None:
         """Kick off an async full-screen capture (window excluded, no flicker)."""
         if self._proc.state() != QProcess.ProcessState.NotRunning:
             return
-        self._proc.start(_SCREENCAPTURE, ["-x", "-t", "png", _SNAP_PATH])
+        if self._use_screencapture and _SCREENCAPTURE is not None:
+            self._proc.start(_SCREENCAPTURE, ["-x", "-t", "png", str(_SNAP_PATH)])
+        else:
+            self._grab_sync()
 
     def _on_grab_done(self, *_args) -> None:
-        img = QImage(_SNAP_PATH)
-        if not img.isNull():
+        img = self._load_snapshot()
+        if img is not None:
             self._ingest(img)
 
     def _grab_sync(self) -> None:
@@ -218,17 +229,21 @@ class DesktopGlass(QWidget):
             self.hide()
             QApplication.processEvents()
         try:
-            subprocess.run(
-                [_SCREENCAPTURE, "-x", "-t", "png", _SNAP_PATH],
-                check=False, timeout=5,
-            )
+            if self._use_screencapture and _SCREENCAPTURE is not None:
+                subprocess.run(
+                    [_SCREENCAPTURE, "-x", "-t", "png", str(_SNAP_PATH)],
+                    check=False, timeout=5,
+                )
+                img = self._load_snapshot()
+            else:
+                screen = QApplication.primaryScreen()
+                img = None if screen is None else screen.grabWindow(0).toImage()
         except Exception:
-            pass
+            img = None
         if was_visible:
             self.show()
             self.raise_()
-        img = QImage(_SNAP_PATH)
-        if not img.isNull():
+        if img is not None and not img.isNull():
             self._ingest(img)
 
     def _ingest(self, img: QImage) -> None:
@@ -299,15 +314,18 @@ class DesktopGlass(QWidget):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if self._dpr == 0.0:  # first show
-            self._excluded = _exclude_from_capture(self)
+            if self._use_screencapture:
+                self._excluded = _exclude_from_capture(self)
+            else:
+                self._excluded = False
             self._update_hint()
             # First snapshot: async if excluded, otherwise hide/grab/show.
-            if self._excluded:
-                self._start_grab()
-                if self._live:
-                    self._timer.start()
-            else:
-                self._grab_sync()
+            QTimer.singleShot(0, self.refresh)
+            # Only auto-refresh when the window is excluded from capture. Without
+            # exclusion the live grab must hide/show the pane every tick, which
+            # reads as a periodic flicker — so we grab once and stay paused.
+            if self._live and self._excluded:
+                self._timer.start()
 
     def paintEvent(self, _event) -> None:
         if self._refracted is None:
@@ -367,7 +385,14 @@ class DesktopGlass(QWidget):
             if et == QEvent.Type.MouseButtonRelease and self._dragging:
                 self._dragging = False
                 self.panel.setCursor(Qt.CursorShape.OpenHandCursor)
-                self.refresh()
+                # When excluded, an async re-grab picks up fresh content with no
+                # flicker. Otherwise the snapshot is already pane-free and the
+                # drag's last _refract() is current — re-grabbing would only hide/
+                # show the pane and glitch, so just settle on the final position.
+                if self._excluded:
+                    self.refresh()
+                else:
+                    self._refract()
                 return True
         return super().eventFilter(obj, event)
 
