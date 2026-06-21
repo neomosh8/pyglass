@@ -23,7 +23,7 @@ depth/mass) and ``frost`` (surface roughness) — over the physical
 
 from __future__ import annotations
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 from .backdrop import Backdrop, ScreenBackdrop, WidgetBackdrop, exclude_from_capture
 from .effect import GlassRenderer, GlassStyle, paint_glass
